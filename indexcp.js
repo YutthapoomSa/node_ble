@@ -128,6 +128,30 @@ async function formatDate(inputDate, includeTime) {
     }
 }
 
+// async function checkTimeAndDate(currentDate) {
+//     const hours = currentDate.getHours();
+//     const minutes = currentDate.getMinutes();
+
+//     if ((hours > 7 || (hours === 7 && minutes >= 30)) && (hours < 14 || (hours === 14 && minutes <= 0))) {
+//         return "morning";
+//     } else if ((hours > 14 || (hours === 14 && minutes > 0)) && (hours < 22 || (hours === 22 && minutes <= 0))) {
+//         return "evening";
+//     } else {
+//         return "night"; // For the time range 22:01 - 07:29 or any other cases
+//     }
+// }
+app.get('/checktime', async (req, res) => {
+    try {
+        const time = new Date();
+        const check_time = await checkTimeAndDate(time);
+
+        res.json(check_time);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
 // Define a route to interact with the MySQL database
 app.get('/get_person_active_tag', async (req, res) => {
     try {
@@ -519,6 +543,7 @@ app.get('/list_time_person_active_tag', async (req, res) => {
 app.get('/update_shift_work', async (req, res) => {
     try {
         let { tag_id, work_date, shift_work } = req.query;
+        console.log("Request Parameters:", { tag_id, work_date });
 
         if (shift_work === 'morning' || shift_work === 'evening' || shift_work === 'night') {
             let sql = `UPDATE tags_person_shift_work SET \`${shift_work}\` = 0 WHERE \`tag_id\` = ? AND \`work_date\` = ?`;
@@ -528,7 +553,7 @@ app.get('/update_shift_work', async (req, res) => {
                 res.status(200).json({ 'status': true, 'message': 'updated successfully' });
 
             } else {
-                res.status(200).json({ 'status': false, 'message': 'No matching record found' });
+                res.status(500).json({ 'status': false, 'message': 'No matching record found' });
             }
         } else {
 
@@ -539,75 +564,82 @@ app.get('/update_shift_work', async (req, res) => {
     }
 });
 
+// app.get('/list_shift_work', async (req, res) => {
+//     try {
+//         let { tag_id, start_date, end_date } = req.query;
+//         console.log({ tag_id, start_date, end_date });
+
+//         //ค้นหา workdate เมื่อส่งค่า start_date, end_date
+//         start_date = new Date(start_date).toISOString().slice(0, 10);
+//         end_date = new Date(end_date).toISOString().slice(0, 10);
+
+//         // Query the database for shift work within the specified date range and tag_id
+//         const [rows] = await db.query(`
+//             SELECT *
+//             FROM tags_person_shift_work
+//             WHERE tag_id = ? AND work_date BETWEEN ? AND ?
+//         `, [tag_id, start_date, end_date]);
+
+//         const workDates = rows.map(row => {
+//             const timeRanges = getTimeRanges(row.morning, row.evening, row.night);
+//             console.log(`For work_date ${row.work_date}, time ranges are: ${JSON.stringify(timeRanges)}`);
+
+//             return {
+//                 tag_id: row.tag_id,
+//                 work_date: new Date(row.work_date).toLocaleDateString('en-CA'),
+//                 timeRanges: timeRanges
+//             };
+//         });
+
+//         res.json(workDates);
+//     } catch (error) {
+//         console.error(error);
+//         res.status(500).send('Internal Server Error');
+//     }
+// });
+
 app.get('/list_shift_work', async (req, res) => {
     try {
-        let { start_date, end_date } = req.query;
-        console.log({ start_date, end_date });
+        let { tag_id, start_date, end_date } = req.query;
+        console.log({ tag_id, start_date, end_date });
 
         // ค้นหา workdate เมื่อส่งค่า start_date, end_date
-        // start_date = new Date(start_date).toISOString().slice(0, 19).replace("T", " ");
-        // end_date = new Date(end_date).toISOString().slice(0, 19).replace("T", " ");
+        start_date = new Date(start_date).toISOString().slice(0, 19).replace("T", " ");
+        end_date = new Date(end_date).toISOString().slice(0, 19).replace("T", " ");
 
         // Query the database for shift work within the specified date range and tag_id
         const [shiftRows] = await db.query(`
             SELECT *
             FROM tags_person_shift_work
-            WHERE work_date BETWEEN ? AND ?
-        `, [start_date, end_date]);
+            WHERE tag_id = ? AND work_date BETWEEN ? AND ?
+        `, [tag_id, start_date, end_date]);
 
-        let shift_date = {};
+        const workDates = await Promise.all(shiftRows.map(async row => {
+            const timeRanges = getTimeRanges(row.morning, row.evening, row.night);
+            // console.log(`For work_date ${row.work_date}, time ranges are: ${JSON.stringify(timeRanges)}`);
 
+            const roundCounts = await countRounds(tag_id, row.work_date, timeRanges);
 
-        for (let index = 0; index < shiftRows.length; index++) {
-            const shift = shiftRows[index];
-            const formattedDate = await formatDate(shift.work_date);
+            return {
+                tag_id: row.tag_id,
+                work_date: new Date(row.work_date).toLocaleDateString('en-CA'),
+                // รอบการทำงาน: timeRanges,
+                จำนวนรอบการทำงาน: roundCounts
+            };
+        }));
 
-            // Check if the date key exists in shift_date
-            if (!shift_date[formattedDate]) {
-                shift_date[formattedDate] = {
-                    morning: [],
-                    evening: [],
-                    night: [],
-                };
-            }
-
-            // Include only shifts where morning is equal to 1
-            if (shift.morning === 1) {
-                shift_date[formattedDate].morning.push({
-                    shift_id: shift.shift_id,
-                    tag_id: shift.tag_id,
-                });
-            }
-
-            // Include only shifts where evening is equal to 1
-            if (shift.evening === 1) {
-                shift_date[formattedDate].evening.push({
-                    shift_id: shift.shift_id,
-                    tag_id: shift.tag_id,
-                });
-            }
-
-            // Include only shifts where night is equal to 1
-            if (shift.night === 1) {
-                shift_date[formattedDate].night.push({
-                    shift_id: shift.shift_id,
-                    tag_id: shift.tag_id,
-                });
-            }
-        }
-
-        res.json(shift_date);
+        res.json(workDates);
     } catch (error) {
-    console.error(error);
-    res.status(500).send('Internal Server Error');
-}
+        console.error(error);
+        res.status(500).send('Internal Server Error');
+    }
 });
 
-async function countRounds(work_date, timeRanges) {
+async function countRounds(tag_id, work_date, timeRanges) {
     const [morningRounds, eveningRounds, nightRounds] = await Promise.all([
-        countRoundInTimeRange(work_date, timeRanges.morning),
-        countRoundInTimeRange(work_date, timeRanges.evening),
-        countRoundInTimeRange(work_date, timeRanges.night)
+        countRoundInTimeRange(tag_id, work_date, timeRanges.morning),
+        countRoundInTimeRange(tag_id, work_date, timeRanges.evening),
+        countRoundInTimeRange(tag_id, work_date, timeRanges.night)
     ]);
 
     return {
@@ -617,12 +649,12 @@ async function countRounds(work_date, timeRanges) {
     };
 }
 
-async function countRoundInTimeRange(work_date, { start, end }) {
+async function countRoundInTimeRange(tag_id, work_date, { start, end }) {
     console.log(`Counting rounds from ${start} to ${end}`);
     const [roundRows] = await db.query(`
         SELECT COUNT(*) as roundCount
         FROM tags_person_round
-        WHERE work_date = ? AND
+        WHERE tag_id = ? AND work_date = ? AND
               (
                 CAST(start_date AS DATETIME) BETWEEN ? AND ? OR
                 CAST(end_date AS DATETIME) BETWEEN ? AND ? OR
@@ -631,7 +663,7 @@ async function countRoundInTimeRange(work_date, { start, end }) {
                   CAST(end_date AS DATETIME) >= ?
                 )
               )
-    `, [work_date, start, end, start, end, start, end]);
+    `, [tag_id, work_date, start, end, start, end, start, end]);
 
     return roundRows[0].roundCount;
 }
@@ -663,3 +695,4 @@ function getTimeRanges(morning, evening, night) {
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
 });
+
